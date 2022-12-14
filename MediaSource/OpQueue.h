@@ -1,20 +1,32 @@
 #pragma once
 #include "AsyncCallback.h"
 #include <list>
+#include <functional>
 
 template <class OP_TYPE>
-class OpQueue : public IUnknown
+class OpQueue : public winrt::implements<OpQueue<OP_TYPE>,IUnknown>
 {
 public:
+    typedef std::list<OP_TYPE*> OperationList;
 
-    typedef std::list<OP_TYPE> OpList;
+    OpQueue(CRITICAL_SECTION& critsec
+        , std::function<HRESULT(OP_TYPE*)> validateOperation
+        , std::function<HRESULT(OP_TYPE*)> dispatchOperation)
+        : m_OnProcessQueue(this, &OpQueue::ProcessQueueAsync),
+        m_critsec(critsec)
+    {
+        m_validateOperation = validateOperation;
+        m_dispatchOperation = dispatchOperation;
+    }
+
+    ~OpQueue() = default;
 
     HRESULT QueueOperation(OP_TYPE* pOp)
     {
         HRESULT hr = S_OK;
         EnterCriticalSection(&m_critsec);
         m_OpQueue.push_back(pOp);
-        pOp.AddRef();
+        pOp->AddRef();
         if (SUCCEEDED(hr))
         {
             hr = ProcessQueue();
@@ -22,8 +34,6 @@ public:
         LeaveCriticalSection(&m_critsec);
         return hr;
     }
-
-protected:
 
     HRESULT ProcessQueue()
     {
@@ -34,8 +44,8 @@ protected:
         }
         return hr;
     }
-
-    HRESULT ProcessQueueAsync(IMFAsyncResult* pResult)
+protected:
+    HRESULT ProcessQueueAsync(IMFAsyncResult* /*pResult*/)
     {
         HRESULT hr = S_OK;
         OP_TYPE* pOp = NULL;
@@ -46,31 +56,24 @@ protected:
         {
             pOp = m_OpQueue.front();
 
-            hr = ValidateOperation(pOp);
+            
+            hr = m_validateOperation(pOp);
             if (SUCCEEDED(hr))
             {
                 m_OpQueue.pop_front();
-                pOp.Release();
-                (void)DispatchOperation(pOp);
+                pOp->Release();
+                (void)m_dispatchOperation(pOp);
             }
         }
         LeaveCriticalSection(&m_critsec);
         return hr;
     }
 
-    virtual HRESULT DispatchOperation(OP_TYPE* pOp) = 0;
-    virtual HRESULT ValidateOperation(OP_TYPE* pOp) = 0;
-
-    OpQueue(CRITICAL_SECTION& critsec)
-        : m_OnProcessQueue(this, &OpQueue::ProcessQueueAsync),
-        m_critsec(critsec)
-    {
-    }
-
-    virtual ~OpQueue() {}
-
 protected:
-    OpList                  m_OpQueue;         // Queue of operations.
+    OperationList m_OpQueue;
     CRITICAL_SECTION& m_critsec;         // Protects the queue state.
     AsyncCallback<OpQueue>  m_OnProcessQueue;  // ProcessQueueAsync callback.
+
+    std::function<HRESULT(OP_TYPE*)> m_dispatchOperation;
+    std::function<HRESULT(OP_TYPE*)> m_validateOperation;
 };

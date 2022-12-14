@@ -5,20 +5,18 @@
 
 #include "SourceOp.h"
 #include "OpQueue.h"
+#include "MediaStream.h"
 
-enum SourceState
-{
-    STATE_INVALID,      // Initial state. Have not started opening the stream.
-    STATE_OPENING,      // BeginOpen is in progress.
-    STATE_STOPPED,
-    STATE_PAUSED,
-    STATE_STARTED,
-    STATE_SHUTDOWN
-};
-
-class MediaSource :winrt::implements<OpQueue<SourceOp>, IMFMediaSource>
+class MediaStream;
+class MediaSource :public winrt::implements<MediaSource, IMFMediaSource>
 {
 public:
+    static void Create(MediaSource** source);
+
+    MediaSource(CRITICAL_SECTION&);
+    ~MediaSource();
+    void Initialize();
+
     // IMFMediaEventGenerator
     HRESULT GetEvent(DWORD dwFlags, IMFMediaEvent** ppEvent);
     HRESULT BeginGetEvent(IMFAsyncCallback* pCallback, IUnknown* punkState);
@@ -36,6 +34,14 @@ public:
     // OpQueue
     HRESULT DispatchOperation(SourceOp* pOp);
     HRESULT ValidateOperation(SourceOp* pOp);
+    HRESULT QueueAsyncOperation(Operation OpType);
+
+protected:
+    HRESULT BeginAsyncOp(SourceOp* pOp);
+    HRESULT CompleteAsyncOp(SourceOp* pOp);
+
+    HRESULT DoStart(StartOp* pOp);
+    HRESULT SelectStreams(IMFPresentationDescriptor* pPD,const PROPVARIANT varStart);
 
 private:
     CRITICAL_SECTION m_critSec;
@@ -43,6 +49,10 @@ private:
     winrt::com_ptr<IMFPresentationDescriptor> m_presentationDescriptor;
     SourceState m_state;
 
-    SourceOp* m_currentOp = nullptr;
+    winrt::com_ptr<SourceOp> m_currentOp;
+    winrt::com_ptr<OpQueue<SourceOp>> m_operationQueue;
+
+    std::vector<winrt::com_ptr<MediaStream>> m_streams;
+    DWORD m_pendingEOS = 0;
 };
 

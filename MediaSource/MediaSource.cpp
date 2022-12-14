@@ -1,8 +1,6 @@
 #include "pch.h"
 #include "MediaSource.h"
 
-#define CHECK_HR(hr) IF_FAILED_GOTO(hr, done)
-
 #pragma region IMFMediaEventGenerator
 HRESULT MediaSource::GetEvent(DWORD dwFlags, IMFMediaEvent** ppEvent)
 {
@@ -29,42 +27,6 @@ HRESULT MediaSource::QueueEvent(MediaEventType met, REFGUID guidExtendedType, HR
 }
 #pragma endregion
 
-HRESULT CreateAudioMediaType(IMFMediaType** ppType)
-{
-    HRESULT hr = S_OK;
-    winrt::com_ptr<IMFMediaType> pType = NULL;
-
-    MPEG1WAVEFORMAT format;
-    ZeroMemory(&format, sizeof(format));
-
-    format.wfx.wFormatTag = WAVE_FORMAT_MPEG;
-    format.wfx.nChannels = 2;
-    format.wfx.nSamplesPerSec = 48000;
-    format.wfx.nBlockAlign = 4;
-    format.wfx.wBitsPerSample = 0; // Not used.
-    format.wfx.cbSize = sizeof(MPEG1WAVEFORMAT) - sizeof(WAVEFORMATEX);
-    format.fwHeadLayer = ACM_MPEG_LAYER3;
-    format.fwHeadMode = ACM_MPEG_STEREO;
-    // Add the "MPEG-1" flag, although it's somewhat redundant.
-    format.fwHeadFlags |= ACM_MPEG_ID_MPEG1;
-
-    // Use the structure to initialize the Media Foundation media type.
-    CHECK_HR(hr = MFCreateMediaType(pType.put()));
-    CHECK_HR(hr = MFInitMediaTypeFromWaveFormatEx(pType.get(), (const WAVEFORMATEX*)&format, sizeof(format)));
-
-    pType.copy_to(ppType);
-
-done:
-    return hr;
-}
-
-HRESULT CreateVideoMediaType(IMFMediaType** ppType)
-{
-    HRESULT hr = S_OK;
-done:
-    return hr;
-}
-
 #pragma region IMFMediaSource
 HRESULT MediaSource::GetCharacteristics(DWORD* pdwCharacteristics)
 {
@@ -74,7 +36,7 @@ HRESULT MediaSource::GetCharacteristics(DWORD* pdwCharacteristics)
         return E_POINTER;
     }
     HRESULT hr = S_OK;
-    *pdwCharacteristics = MFMEDIASOURCE_CAN_PAUSE;
+    *pdwCharacteristics = MFMEDIASOURCE_CAN_PAUSE | MFMEDIASOURCE_IS_LIVE;
     EnterCriticalSection(&m_critSec);
     return hr;
 }
@@ -82,27 +44,25 @@ HRESULT MediaSource::GetCharacteristics(DWORD* pdwCharacteristics)
 HRESULT MediaSource::CreatePresentationDescriptor(IMFPresentationDescriptor** ppPresentationDescriptor)
 {
     HRESULT hr = S_OK;
-    winrt::com_ptr<IMFMediaType> audioType, videoType;
-    hr = CreateAudioMediaType(audioType.put());
-    hr = CreateAudioMediaType(videoType.put());
-    std::vector<winrt::com_ptr<IMFMediaType>> types{ videoType,audioType };
-    std::vector<IMFStreamDescriptor*> descs{};
-    for (size_t i = 0; i < types.size(); i++)
+
+    std::vector<IMFStreamDescriptor*> streamDescriptors{};
+    for (size_t i = 0; i < m_streams.size(); i++)
     {
+        auto stream = m_streams[i];
         winrt::com_ptr<IMFStreamDescriptor> desc;
-        auto type = types[i].get();
-        MFCreateStreamDescriptor(i, 1, &type, desc.put());
-        descs.push_back(desc.detach());
+        hr = stream->GetStreamDescriptor(desc.put());
+        streamDescriptors.push_back(desc.get());
+        desc.detach();
     }
 
     winrt::com_ptr<IMFPresentationDescriptor> presentationDescriptor;
-    hr = MFCreatePresentationDescriptor(descs.size(), descs.data(), presentationDescriptor.put());
+    hr = MFCreatePresentationDescriptor((DWORD)streamDescriptors.size(), streamDescriptors.data(), presentationDescriptor.put());
 
     DWORD streamsCount;
     hr = presentationDescriptor->GetStreamDescriptorCount(&streamsCount);
     for (size_t i = 0; i < streamsCount; i++)
     {
-        hr = presentationDescriptor->SelectStream(i);
+        hr = presentationDescriptor->SelectStream((DWORD)i);
     }
 
     hr = presentationDescriptor->Clone(m_presentationDescriptor.put());
@@ -115,7 +75,7 @@ HRESULT MediaSource::Start(IMFPresentationDescriptor* pPresentationDescriptor, c
 {
     EnterCriticalSection(&m_critSec);
     HRESULT hr = S_OK;
-    SourceOp* pAsyncOp = NULL;
+    winrt::com_ptr<SourceOp> pAsyncOp = NULL;
 
     // Check parameters. 
     // Start position and presentation descriptor cannot be NULL.
@@ -148,7 +108,7 @@ HRESULT MediaSource::Start(IMFPresentationDescriptor* pPresentationDescriptor, c
         // If the current state is anything else, then the 
         // start position must be VT_EMPTY (current position).
 
-        if ((m_state != STATE_STOPPED) || (pvarStartPosition->hVal.QuadPart != 0))
+        if ((m_state != SourceState::STATE_STOPPED) || (pvarStartPosition->hVal.QuadPart != 0))
         {
             return MF_E_INVALIDREQUEST;
         }
@@ -157,25 +117,19 @@ HRESULT MediaSource::Start(IMFPresentationDescriptor* pPresentationDescriptor, c
     // The operation looks OK. Complete the operation asynchronously.
 
     // Create the state object for the async operation. 
-    CHECK_HR(hr = SourceOp::CreateStartOp(pPresentationDescriptor, &pAsyncOp));
-
-    CHECK_HR(hr = pAsyncOp->SetData(*pvarStartPosition));
-
-    // Queue the operation.
-    CHECK_HR(hr = QueueOperation(pAsyncOp));
-
-done:
-    SAFE_RELEASE(pAsyncOp);
+    hr = SourceOp::CreateStartOp(pPresentationDescriptor, pAsyncOp.put());
+    hr = pAsyncOp->SetData(*pvarStartPosition);
+    hr = m_operationQueue->QueueOperation(pAsyncOp.get());
     return hr;
 }
 
-HRESULT MediaSource::Stop(void);
-HRESULT MediaSource::Pause(void);
-HRESULT MediaSource::Shutdown(void);
+HRESULT MediaSource::Stop(void) { return S_OK; }
+HRESULT MediaSource::Pause(void) { return S_OK; }
+HRESULT MediaSource::Shutdown(void) { return S_OK; }
 #pragma endregion
 
 #pragma region Operation Queue
-HRESULT MediaSource::ValidateOperation(SourceOp* pOp)
+HRESULT MediaSource::ValidateOperation(SourceOp* /*pOp*/)
 {
     if (m_currentOp != NULL)
     {
@@ -188,26 +142,180 @@ HRESULT MediaSource::DispatchOperation(SourceOp* pOp)
 {
     EnterCriticalSection(&m_critSec);
     HRESULT hr = S_OK;
-    if (m_state == STATE_SHUTDOWN)
+    if (m_state == SourceState::STATE_SHUTDOWN)
     {
         return S_OK; // Already shut down, ignore the request.
     }
     switch (pOp->Op())
     {
-    case SourceOp::OP_START:
+    case Operation::OP_START:
+        hr = DoStart((StartOp*)pOp);
         break;
-    case SourceOp::OP_STOP:
+    case Operation::OP_STOP:
         break;
-    case SourceOp::OP_PAUSE:
+    case Operation::OP_PAUSE:
         break;
-    case SourceOp::OP_REQUEST_DATA:
+    case Operation::OP_REQUEST_DATA:
         break;
-    case SourceOp::OP_END_OF_STREAM:
+    case Operation::OP_END_OF_STREAM:
         break;
     default:
         hr = E_UNEXPECTED;
     }
     return hr;
 }
+
+HRESULT MediaSource::QueueAsyncOperation(Operation OpType)
+{
+    HRESULT hr = S_OK;
+    winrt::com_ptr<SourceOp> pOp;
+    hr = SourceOp::CreateOp(OpType, pOp.put());
+    hr = m_operationQueue->QueueOperation(pOp.get());
+    return hr;
+}
 #pragma endregion
 
+HRESULT MediaSource::BeginAsyncOp(SourceOp* pOp)
+{
+    if (pOp == NULL || m_currentOp != NULL)
+    {
+        assert(FALSE);
+        return E_FAIL;
+    }
+    m_currentOp.copy_from(pOp);
+    return S_OK;
+}
+
+HRESULT MediaSource::CompleteAsyncOp(SourceOp* pOp)
+{
+    HRESULT hr = S_OK;
+    if (pOp == NULL || m_currentOp == NULL)
+    {
+        assert(FALSE);
+        return E_FAIL;
+    }
+
+    if (m_currentOp.get() != pOp)
+    {
+        assert(FALSE);
+        return E_FAIL;
+    }
+
+    m_currentOp = nullptr;
+
+    // Process the next operation on the queue.
+    hr = m_operationQueue->ProcessQueue();
+    return hr;
+}
+
+HRESULT MediaSource::DoStart(StartOp* pOp)
+{
+    assert(pOp->Op() == Operation::OP_START);
+
+    winrt::com_ptr<IMFPresentationDescriptor> pPD;
+
+    HRESULT hr = S_OK;
+
+    hr = BeginAsyncOp(pOp);
+    hr = pOp->GetPresentationDescriptor(pPD.put());
+
+    // Because this sample does not support seeking, the start
+    // position must be 0 (from stopped) or "current position."
+
+    // If the sample supported seeking, we would need to get the
+    // start position from the PROPVARIANT data contained in pOp.
+
+    // Select/deselect streams, based on what the caller set in the PD.
+    hr = SelectStreams(pPD.get(), pOp->Data());
+
+    m_state = SourceState::STATE_STARTED;
+
+    // Queue the "started" event. The event data is the start position.
+    hr = m_eventQueue->QueueEventParamVar(MESourceStarted, GUID_NULL, S_OK, &pOp->Data());
+    if (FAILED(hr))
+    {
+        (void)m_eventQueue->QueueEventParamVar(MESourceStarted, GUID_NULL, hr, NULL);
+    }
+    CompleteAsyncOp(pOp);
+    return hr;
+}
+
+HRESULT MediaSource::SelectStreams(
+    IMFPresentationDescriptor* /*pPD*/,   // Presentation descriptor.
+    const PROPVARIANT varStart        // New start position.
+)
+{
+    HRESULT hr = S_OK;
+    BOOL    fSelected = FALSE;
+    BOOL    fWasSelected = FALSE;
+
+    winrt::com_ptr<IMFStreamDescriptor> pSD = NULL;
+    winrt::com_ptr<MediaStream> pStream = NULL;
+
+    // Reset the pending EOS count.  
+    m_pendingEOS = 0;
+
+    // Loop throught the stream descriptors to find which streams are active.
+    for (DWORD i = 0; i < m_streams.size(); i++)
+    {
+        // Was the stream active already?
+        fWasSelected = m_streams[i]->IsActive();
+
+        // Activate or deactivate the stream.
+        CHECK_HR(hr = m_streams[i]->Activate(fSelected));
+
+        if (fSelected)
+        {
+            m_pendingEOS++;
+
+            if (fWasSelected)
+            {
+                // This stream was previously selected. Queue the "updated stream" event.
+                CHECK_HR(hr = m_eventQueue->QueueEventParamUnk(MEUpdatedStream, GUID_NULL, hr, m_streams[i].as<IUnknown>().get()));
+            }
+            else
+            {
+                // This stream was not previously selected. Queue the "new stream" event.
+                CHECK_HR(hr = m_eventQueue->QueueEventParamUnk(MENewStream, GUID_NULL, hr, m_streams[i].as<IUnknown>().get()));
+            }
+
+            // Start the stream. The stream will send the appropriate stream event.
+            CHECK_HR(hr = m_streams[i]->Start(varStart));
+        }
+    }
+    return hr;
+}
+
+
+MediaSource::MediaSource(CRITICAL_SECTION& critSec) : m_critSec(critSec)
+{
+    m_operationQueue = winrt::make_self<OpQueue<SourceOp>>(critSec
+        , [this](SourceOp* op)->HRESULT
+        {
+            return ValidateOperation(op);
+        },
+        [this](SourceOp* op)->HRESULT
+        {
+            return DispatchOperation(op);
+        });
+}
+
+MediaSource::~MediaSource()
+{
+    DeleteCriticalSection(&m_critSec);
+}
+
+void MediaSource::Create(MediaSource** pSource)
+{
+    CRITICAL_SECTION critSec;
+    InitializeCriticalSection(&critSec);
+    auto source = winrt::make_self<MediaSource>(critSec);
+    source.copy_to(pSource);
+}
+
+void MediaSource::Initialize()
+{
+    DWORD streamIndex = 0;
+    auto stream = winrt::make_self<MediaStream>(streamIndex, this);
+    m_streams.push_back(stream);
+}

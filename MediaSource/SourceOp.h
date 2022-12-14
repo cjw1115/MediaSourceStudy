@@ -1,18 +1,17 @@
 #pragma once
 #include <mfidl.h>
+enum class Operation
+{
+    OP_START,
+    OP_PAUSE,
+    OP_STOP,
+    OP_REQUEST_DATA,
+    OP_END_OF_STREAM
+};
+
 class SourceOp : public winrt::implements<SourceOp, IUnknown>
 {
 public:
-
-    enum Operation
-    {
-        OP_START,
-        OP_PAUSE,
-        OP_STOP,
-        OP_REQUEST_DATA,
-        OP_END_OF_STREAM
-    };
-
     static HRESULT CreateOp(Operation op, SourceOp** ppOp);
     static HRESULT CreateStartOp(IMFPresentationDescriptor* pPD, SourceOp** ppOp);
 

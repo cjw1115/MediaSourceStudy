@@ -12,7 +12,7 @@ SourceOp::~SourceOp()
     PropVariantClear(&m_data);
 }
 
-HRESULT SourceOp::CreateOp(SourceOp::Operation op, SourceOp** ppOp)
+HRESULT SourceOp::CreateOp(Operation op, SourceOp** ppOp)
 {
     if (ppOp == NULL)
     {
@@ -51,7 +51,7 @@ HRESULT SourceOp::SetData(const PROPVARIANT& var)
     return PropVariantCopy(&m_data, &var);
 }
 
-StartOp::StartOp(IMFPresentationDescriptor* pPD) : SourceOp(SourceOp::OP_START)
+StartOp::StartOp(IMFPresentationDescriptor* pPD) : SourceOp(Operation::OP_START)
 {
     m_presentationDesc.copy_from(pPD);
 }
